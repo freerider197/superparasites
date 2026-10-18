@@ -54,13 +54,39 @@ const int32_t kMaxNumGrains = 40;
 const int32_t kMinClockPeriod = 64;
 const int32_t kMaxClockPeriod = 65536;
 
-// With a clock, SIZE steps through these fractions of the clock period and
-// POSITION steps through slices aligned to the clock ticks in the recording.
-const float kSyncedSizes[] = {
-  1.0f / 32.0f, 1.0f / 16.0f, 1.0f / 8.0f, 1.0f / 4.0f, 1.0f / 2.0f, 1.0f, 2.0f
+// TRIG reaches the player kAdcLatency - 1 blocks after the edge (see
+// CvScaler). The clock grid in the recording is shifted back by that much.
+const int32_t kTriggerLatencyBlocks = 4;
+
+// With a clock, SIZE steps through fractions of a musical step and POSITION
+// steps through slices aligned to the clock ticks in the recording.
+//   Clock-locked DENSITY (right half): fractions of the ratchet step (gate).
+//   Otherwise: fractions of the clock period.
+const int32_t kNumSyncedSizes = 5;
+const float kGateSizes[kNumSyncedSizes] = {
+  1.0f / 8.0f, 1.0f / 4.0f, 1.0f / 2.0f, 3.0f / 4.0f, 1.0f
 };
-const int32_t kNumSyncedSizes = sizeof(kSyncedSizes) / sizeof(kSyncedSizes[0]);
-const float kMinSyncedGrainSize = 128.0f;
+const float kClockSizes[kNumSyncedSizes] = {
+  1.0f / 16.0f, 1.0f / 8.0f, 1.0f / 4.0f, 1.0f / 2.0f, 1.0f
+};
+// Shorter grains repeated in rhythm turn into a pitched buzz.
+const float kMinSyncedGrainSize = 512.0f;
+
+// Maps value (0..1) to one of num_steps steps. Stays on the current step
+// until value moves well past its edges, so pot/CV noise can't flip it.
+inline int32_t QuantizeWithHysteresis(
+    float value, int32_t num_steps, int32_t* state) {
+  float scaled = value * static_cast<float>(num_steps);
+  int32_t step = *state;
+  if (step < 0 || step >= num_steps ||
+      scaled < static_cast<float>(step) - 0.2f ||
+      scaled > static_cast<float>(step) + 1.2f) {
+    step = static_cast<int32_t>(scaled);
+    CONSTRAIN(step, 0, num_steps - 1);
+    *state = step;
+  }
+  return step;
+}
 
 using namespace stmlib;
 
@@ -84,6 +110,10 @@ class GranularSamplePlayer {
     clock_period_ = 0;
     ratchets_left_ = 0;
     recorded_since_clock_ = 0;
+    clock_count_ = 0;
+    ratchet_step_ = 0.0f;
+    size_step_ = -1;
+    position_slot_ = -1;
   }
   
   template<Resolution resolution>
@@ -98,7 +128,8 @@ class GranularSamplePlayer {
 
     // Every TRIG measures the clock period and restarts the grain rhythm.
     bool seed_trigger = parameters.capture;
-    int32_t clock_ratio = parameters.granular.clock_ratio;
+    int32_t multiply = parameters.granular.clock_multiply;
+    int32_t divide = parameters.granular.clock_divide;
     if (seed_trigger) {
       clock_period_ = samples_since_clock_ >= kMinClockPeriod &&
           samples_since_clock_ <= kMaxClockPeriod ? samples_since_clock_ : 0;
@@ -106,17 +137,23 @@ class GranularSamplePlayer {
       grain_rate_phasor_ = 0.0f;
       // While frozen, keep the grid of the frozen recording.
       if (!parameters.freeze) {
-        recorded_since_clock_ = 0;
+        recorded_since_clock_ = kTriggerLatencyBlocks * size;
       }
-      ratchets_left_ = clock_ratio - 1;
+      ++clock_count_;
+      ratchets_left_ = multiply - 1;
     }
 
-    // Clock-locked mode: clock_ratio grains evenly spaced within each clock
-    // period. Without a clock, grains run free.
-    bool clock_locked = clock_ratio > 0 && clock_period_ > 0;
-    float ratchet_spacing = clock_locked
-        ? static_cast<float>(clock_period_) / static_cast<float>(clock_ratio)
+    // Clock-locked mode: grains every divide/multiply clock periods. Without
+    // a clock, grains run free.
+    bool clock_locked = multiply > 0 && clock_period_ > 0;
+    ratchet_step_ = clock_locked
+        ? static_cast<float>(clock_period_ * divide) /
+              static_cast<float>(multiply)
         : 0.0f;
+    if (clock_locked && seed_trigger && clock_count_ % divide != 0) {
+      seed_trigger = false;
+    }
+    float ratchet_spacing = ratchet_step_;
     
     // Build a list of available grains.
     int32_t num_available_grains = FillAvailableGrainsList();
@@ -242,18 +279,24 @@ class GranularSamplePlayer {
     float inv_pitch_ratio = SemitonesToRatio(-pitch);
     bool synced = clock_period_ > 0;
     float grain_size;
+    float grid = 0.0f;
     if (synced) {
-      int32_t step = static_cast<int32_t>(parameters.size * kNumSyncedSizes);
-      CONSTRAIN(step, 0, kNumSyncedSizes - 1);
-      grain_size = clock_period_ * kSyncedSizes[step];
+      bool locked = ratchet_step_ > 0.0f;
+      float unit = locked ? ratchet_step_ : static_cast<float>(clock_period_);
+      int32_t step = QuantizeWithHysteresis(
+          parameters.size, kNumSyncedSizes, &size_step_);
+      grain_size = unit * (locked ? kGateSizes[step] : kClockSizes[step]);
+      if (grain_size < kMinSyncedGrainSize) {
+        // Locked ratchets always keep a gap between hits.
+        grain_size = std::min(kMinSyncedGrainSize, locked ? unit * 0.75f : unit);
+      }
       // Halve until it fits in the buffer (with room for the play head).
       float max_size = buffer_size / (1.0f + pitch_ratio);
       while (grain_size > max_size && grain_size > kMinSyncedGrainSize) {
         grain_size *= 0.5f;
       }
-      if (grain_size < kMinSyncedGrainSize) {
-        grain_size = kMinSyncedGrainSize;
-      }
+      // Locked: slices on the ratchet grid. Otherwise: back-to-back slices.
+      grid = locked ? unit : grain_size;
     } else {
       grain_size = Interpolate(lut_grain_size, parameters.size, 256.0f);
     }
@@ -294,16 +337,18 @@ class GranularSamplePlayer {
     if (synced) {
       // Candidate start points sit at whole slices before/after the last
       // clock tick: delay = phase + j * slice. POSITION picks j.
-      float slice = grain_size;
+      // The range of j doesn't depend on phase, so a given POSITION keeps
+      // picking the same slice as the record head moves.
       float since_tick = static_cast<float>(recorded_since_clock_) +
           (parameters.freeze ? 0.0f : static_cast<float>(pre_delay));
-      float phase = since_tick - floorf(since_tick / slice) * slice;
-      float j_min = ceilf((eaten_by_play_head - phase) / slice);
-      float j_max = floorf((buffer_size - grain_size - phase) / slice);
-      if (j_min < 0.0f) j_min = 0.0f;
+      float phase = since_tick - floorf(since_tick / grid) * grid;
+      int32_t j_min = static_cast<int32_t>(ceilf(eaten_by_play_head / grid));
+      int32_t j_max = static_cast<int32_t>(
+          floorf((buffer_size - grain_size - grid) / grid));
       if (j_max >= j_min) {
-        float j = j_min + floorf(position * (j_max - j_min) + 0.5f);
-        delay = phase + j * slice;
+        int32_t slot = QuantizeWithHysteresis(
+            position, j_max - j_min + 1, &position_slot_);
+        delay = phase + static_cast<float>(j_min + slot) * grid;
       }
     }
     int32_t start = buffer_head - static_cast<int32_t>(delay);
@@ -334,6 +379,10 @@ class GranularSamplePlayer {
   int32_t clock_period_;
   int32_t ratchets_left_;
   int32_t recorded_since_clock_;
+  uint32_t clock_count_;
+  float ratchet_step_;
+  int32_t size_step_;
+  int32_t position_slot_;
   
   Grain grains_[kMaxNumGrains];
   int32_t available_grains_[kMaxNumGrains];

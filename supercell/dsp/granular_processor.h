@@ -51,9 +51,12 @@ namespace clouds {
 
 const int32_t kDownsamplingFactor = 2;
 
-// Granular mode: grains per TRIG clock on the right half of DENSITY.
-const int32_t kClockRatios[] = { 1, 2, 3, 4, 6, 8, 12, 16 };
-const int32_t kNumClockRatios = sizeof(kClockRatios) / sizeof(kClockRatios[0]);
+// Granular mode: grain rate on the right half of DENSITY, as
+// { multiply, divide } of the TRIG clock.
+const int32_t kNumClockRatios = 6;
+const int32_t kClockRatios[kNumClockRatios][2] = {
+  { 1, 4 }, { 1, 2 }, { 1, 1 }, { 2, 1 }, { 3, 1 }, { 4, 1 }
+};
 
 // Granular mode: point on TEXTURE where window shaping ends and diffusion
 // begins.
@@ -207,6 +210,7 @@ class GranularProcessor {
   PlaybackMode previous_playback_mode_;
   int32_t num_channels_;
   bool low_fidelity_;
+  int32_t clock_ratio_step_;
   
   bool silence_;
   bool bypass_;

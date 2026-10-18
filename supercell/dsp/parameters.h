@@ -52,7 +52,10 @@ struct Parameters {
     float overlap;
     float window_shape;
     float stereo_spread;
-    int32_t clock_ratio;  // 0: free-running, N: N grains per TRIG clock
+    // Clock-locked grains every clock_divide / clock_multiply TRIG periods.
+    // clock_multiply == 0: free-running.
+    int32_t clock_multiply;
+    int32_t clock_divide;
     bool reverse;
   } granular;
 

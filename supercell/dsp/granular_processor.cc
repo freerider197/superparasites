@@ -52,6 +52,7 @@ void GranularProcessor::Init(
 
   num_channels_ = 2;
   low_fidelity_ = false;
+  clock_ratio_step_ = -1;
   bypass_ = false;
 
   src_down_.Init();
@@ -106,16 +107,17 @@ void GranularProcessor::ProcessGranular(
       //   Left of noon: free-running regular grains, rate increasing to the
       //   left. Each TRIG restarts the rhythm.
       //   Right of noon: grains locked to the TRIG clock, stepping through
-      //   kClockRatios grains per clock. Without a clock, behaves like the
-      //   left side.
+      //   kClockRatios (/4 to x4). Without a clock, behaves like the left
+      //   side.
       //   Noon: grains only on TRIG.
-      parameters_.granular.clock_ratio = 0;
+      parameters_.granular.clock_multiply = 0;
+      parameters_.granular.clock_divide = 1;
       if (parameters_.density >= 0.53f) {
         parameters_.granular.overlap = (parameters_.density - 0.53f) * 2.12f;
-        int32_t step = static_cast<int32_t>(
-            parameters_.granular.overlap * kNumClockRatios);
-        CONSTRAIN(step, 0, kNumClockRatios - 1);
-        parameters_.granular.clock_ratio = kClockRatios[step];
+        int32_t step = QuantizeWithHysteresis(
+            parameters_.granular.overlap, kNumClockRatios, &clock_ratio_step_);
+        parameters_.granular.clock_multiply = kClockRatios[step][0];
+        parameters_.granular.clock_divide = kClockRatios[step][1];
       } else if (parameters_.density <= 0.47f) {
         parameters_.granular.overlap = (0.47f - parameters_.density) * 2.12f;
       } else {
