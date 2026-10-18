@@ -52,7 +52,7 @@ struct Parameters {
     float overlap;
     float window_shape;
     float stereo_spread;
-    bool use_deterministic_seed;
+    int32_t clock_ratio;  // 0: free-running, N: N grains per TRIG clock
     bool reverse;
   } granular;
 

@@ -51,6 +51,14 @@ namespace clouds {
 
 const int32_t kDownsamplingFactor = 2;
 
+// Granular mode: grains per TRIG clock on the right half of DENSITY.
+const int32_t kClockRatios[] = { 1, 2, 3, 4, 6, 8, 12, 16 };
+const int32_t kNumClockRatios = sizeof(kClockRatios) / sizeof(kClockRatios[0]);
+
+// Granular mode: point on TEXTURE where window shaping ends and diffusion
+// begins.
+const float kDiffusionStart = 0.6f;
+
 enum PlaybackMode {
   PLAYBACK_MODE_GRANULAR,
   PLAYBACK_MODE_STRETCH,

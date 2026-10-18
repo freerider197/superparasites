@@ -48,6 +48,11 @@ namespace clouds {
 
 const int32_t kMaxNumGrains = 40;
 
+// Clock periods accepted on the TRIG input, in samples. Slower than the max
+// (or no clock at all) falls back to free-running grains.
+const int32_t kMinClockPeriod = 64;
+const int32_t kMaxClockPeriod = 65536;
+
 using namespace stmlib;
 
 class GranularSamplePlayer {
@@ -65,6 +70,10 @@ class GranularSamplePlayer {
     num_grains_ = 0.0f;
     num_channels_ = num_channels;
     grain_size_hint_ = 1024.0f;
+    grain_rate_phasor_ = 0.0f;
+    samples_since_clock_ = kMaxClockPeriod + 1;
+    clock_period_ = 0;
+    ratchets_left_ = 0;
   }
   
   template<Resolution resolution>
@@ -75,25 +84,44 @@ class GranularSamplePlayer {
     float overlap = parameters.granular.overlap;
     overlap = (overlap * overlap) * (overlap * overlap);
     float target_num_grains = max_num_grains_ * overlap;
-    float p = target_num_grains / static_cast<float>(grain_size_hint_);
     float space_between_grains = grain_size_hint_ / target_num_grains;
-    if (parameters.granular.use_deterministic_seed) {
-      p = -1.0f;
-    } else {
-      grain_rate_phasor_ = -1000.0f;
+
+    // Every TRIG measures the clock period and restarts the grain rhythm.
+    bool seed_trigger = parameters.capture;
+    int32_t clock_ratio = parameters.granular.clock_ratio;
+    if (seed_trigger) {
+      clock_period_ = samples_since_clock_ >= kMinClockPeriod &&
+          samples_since_clock_ <= kMaxClockPeriod ? samples_since_clock_ : 0;
+      samples_since_clock_ = 0;
+      grain_rate_phasor_ = 0.0f;
+      ratchets_left_ = clock_ratio - 1;
     }
+
+    // Clock-locked mode: clock_ratio grains evenly spaced within each clock
+    // period. Without a clock, grains run free.
+    bool clock_locked = clock_ratio > 0 && clock_period_ > 0;
+    float ratchet_spacing = clock_locked
+        ? static_cast<float>(clock_period_) / static_cast<float>(clock_ratio)
+        : 0.0f;
     
     // Build a list of available grains.
     int32_t num_available_grains = FillAvailableGrainsList();
     
     // Try to schedule new grains.
-    bool seed_trigger = parameters.capture;
     for (size_t t = 0; t < size; ++t) {
       grain_rate_phasor_ += 1.0f;
-      bool seed_probabilistic = Random::GetFloat() < p
-          && target_num_grains > num_grains_;
-      bool seed_deterministic = grain_rate_phasor_ >= space_between_grains;
-      bool seed = seed_probabilistic || seed_deterministic || seed_trigger;
+      bool seed;
+      if (clock_locked) {
+        seed = ratchets_left_ > 0 && grain_rate_phasor_ >= ratchet_spacing;
+        if (seed) {
+          // A ratchet with no free grain is dropped to stay on the grid.
+          grain_rate_phasor_ -= ratchet_spacing;
+          --ratchets_left_;
+        }
+      } else {
+        seed = grain_rate_phasor_ >= space_between_grains;
+      }
+      seed = seed || seed_trigger;
       if (num_available_grains && seed) {
         --num_available_grains;
         int32_t index = available_grains_[num_available_grains];
@@ -112,9 +140,17 @@ class GranularSamplePlayer {
             buffer->size(),
             buffer->head() - size + t,
             quality);
-        grain_rate_phasor_ = 0.0f;
+        if (!clock_locked) {
+          grain_rate_phasor_ = 0.0f;
+        }
         seed_trigger = false;
       }
+    }
+
+    samples_since_clock_ += size;
+    if (samples_since_clock_ > kMaxClockPeriod) {
+      samples_since_clock_ = kMaxClockPeriod + 1;
+      clock_period_ = 0;
     }
     
     // Overlap grains.
@@ -245,6 +281,10 @@ class GranularSamplePlayer {
   float gain_normalization_;
   float grain_size_hint_;
   float grain_rate_phasor_;
+
+  int32_t samples_since_clock_;
+  int32_t clock_period_;
+  int32_t ratchets_left_;
   
   Grain grains_[kMaxNumGrains];
   int32_t available_grains_[kMaxNumGrains];

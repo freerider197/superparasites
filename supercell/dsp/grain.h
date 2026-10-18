@@ -39,8 +39,9 @@
 
 namespace clouds {
 
-const float slope_response[4] = { 1.3f, 1.0f, 1.0f, 1.0f };
-const float bias_response[4] = { 1.0f, 2.0f - 1.0f/500.0f, 1.0f/500.0f, 1.0f };
+// Shortest fade-in/fade-out applied to any grain, in samples. Anything
+// shorter than ~2ms is heard as a click.
+const float kMinGrainFadeSamples = 64.0f;
 
 enum GrainQuality {
   GRAIN_QUALITY_LOW,
@@ -53,20 +54,9 @@ class Grain {
   Grain() { }
   ~Grain() { }
 
-  inline float InterpolatePlateau(const float* table, float index, float size) {
-    index *= size;
-    MAKE_INTEGRAL_FRACTIONAL(index)
-      float a = table[index_integral];
-    float b = table[index_integral + 1];
-    if (index_fractional < 1.0f/1.1f)
-      return a + (b - a) * index_fractional * 1.1f;
-    else
-      return b;
-  }
-
   void Init() {
     active_ = false;
-    envelope_phase_ = 2.0f;
+    envelope_phase_ = 1.0f;
   }
 
   void Start(
@@ -92,13 +82,32 @@ class Grain {
       phase_ = 0;
     }
     envelope_phase_ = 0.0f;
-    envelope_phase_increment_ = 2.0f / static_cast<float>(width);
+    envelope_phase_increment_ = 1.0f / static_cast<float>(width);
 
-    envelope_slope_ = InterpolatePlateau(slope_response, window_shape, 3);
-    envelope_slope_ *= envelope_slope_ * envelope_slope_;
-    envelope_slope_ *= envelope_slope_ * envelope_slope_;
-    envelope_slope_ *= envelope_slope_ * envelope_slope_;
-    envelope_bias_ = InterpolatePlateau(bias_response, window_shape, 3);
+    // Window shape morphs through:
+    //   0.0 flat top with short smooth fades
+    //   0.5 smooth bell (Hann-like)
+    //   1.0 percussive: fast smooth attack, curved decay
+    // Fades never get shorter than kMinGrainFadeSamples.
+    float attack, release;
+    if (window_shape < 0.5f) {
+      attack = release = 0.05f + 0.9f * window_shape;
+      envelope_curve_ = 0.0f;
+    } else {
+      float k = 2.0f * window_shape - 1.0f;
+      attack = 0.5f * (1.0f - k);
+      release = 1.0f - attack;
+      envelope_curve_ = k;
+    }
+    float min_fade = kMinGrainFadeSamples * envelope_phase_increment_;
+    if (min_fade > 0.5f) min_fade = 0.5f;
+    if (attack < min_fade) attack = min_fade;
+    if (release < min_fade) release = min_fade;
+    if (attack + release > 1.0f) release = 1.0f - attack;
+    envelope_attack_end_ = attack;
+    envelope_attack_scale_ = 1.0f / attack;
+    envelope_release_start_ = 1.0f - release;
+    envelope_release_scale_ = 1.0f / release;
 
     active_ = true;
     gain_l_ = gain_l;
@@ -108,17 +117,26 @@ class Grain {
   
   inline void RenderEnvelope(float* destination, size_t size) {
     const float increment = envelope_phase_increment_;
-    const float slope = envelope_slope_;
-    const float bias = envelope_bias_;
+    const float attack_end = envelope_attack_end_;
+    const float attack_scale = envelope_attack_scale_;
+    const float release_start = envelope_release_start_;
+    const float release_scale = envelope_release_scale_;
+    const float curve = envelope_curve_;
 
     float phase = envelope_phase_;
     while (size--) {
-      float gain = phase <= bias ?
-        phase * slope / bias :
-        (2.0f - phase) * slope / (2.0f - bias);
-      if (gain > 1.0f) gain = 1.0f;
+      // Smoothstep fades: zero slope at both ends, so no clicks.
+      float gain = 1.0f;
+      if (phase < attack_end) {
+        float u = phase * attack_scale;
+        gain = u * u * (3.0f - 2.0f * u);
+      } else if (phase > release_start) {
+        float t = (1.0f - phase) * release_scale;
+        float smooth = t * t * (3.0f - 2.0f * t);
+        gain = smooth + curve * (t * t * t - smooth);
+      }
       phase += increment;
-      if (phase >= 2.0f) {
+      if (phase >= 1.0f) {
         *destination = -1.0f;
         break;
       }
@@ -190,8 +208,11 @@ class Grain {
   int32_t phase_increment_;
   int32_t pre_delay_;
 
-  float envelope_slope_;
-  float envelope_bias_;         /* asymetry of envelope: -1..1 */
+  float envelope_attack_end_;
+  float envelope_attack_scale_;
+  float envelope_release_start_;
+  float envelope_release_scale_;
+  float envelope_curve_;
   float envelope_phase_;
   float envelope_phase_increment_;
 
