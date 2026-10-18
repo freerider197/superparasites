@@ -52,7 +52,6 @@ void GranularProcessor::Init(
 
   num_channels_ = 2;
   low_fidelity_ = false;
-  clock_ratio_step_ = -1;
   bypass_ = false;
 
   src_down_.Init();
@@ -103,25 +102,22 @@ void GranularProcessor::ProcessGranular(
 
   switch (playback_mode_) {
     case PLAYBACK_MODE_GRANULAR:
-      // In Granular mode, DENSITY is a meta parameter.
-      //   Left of noon: free-running regular grains, rate increasing to the
-      //   left. Each TRIG restarts the rhythm.
-      //   Right of noon: grains locked to the TRIG clock, stepping through
-      //   kClockRatios (/4 to x4). Without a clock, behaves like the left
-      //   side.
-      //   Noon: grains only on TRIG.
-      parameters_.granular.clock_multiply = 0;
-      parameters_.granular.clock_divide = 1;
+      // In Granular mode, DENSITY is a meta parameter. Overlap grows from
+      // noon towards either end.
+      //   With a TRIG clock: left of noon sparser, right of noon denser
+      //   clock-synced grains, noon one grain per TRIG (see
+      //   GranularSamplePlayer::SelectRhythm).
+      //   Without a clock: free-running regular grains on both sides, rate
+      //   increasing away from noon. Each TRIG restarts the rhythm.
       if (parameters_.density >= 0.53f) {
         parameters_.granular.overlap = (parameters_.density - 0.53f) * 2.12f;
-        int32_t step = QuantizeWithHysteresis(
-            parameters_.granular.overlap, kNumClockRatios, &clock_ratio_step_);
-        parameters_.granular.clock_multiply = kClockRatios[step][0];
-        parameters_.granular.clock_divide = kClockRatios[step][1];
+        parameters_.granular.rhythm_side = 1;
       } else if (parameters_.density <= 0.47f) {
         parameters_.granular.overlap = (0.47f - parameters_.density) * 2.12f;
+        parameters_.granular.rhythm_side = -1;
       } else {
         parameters_.granular.overlap = 0.0f;
+        parameters_.granular.rhythm_side = 0;
       }
 
 #ifdef CLOUDS_QUANTIZE_SEMITONES
@@ -747,7 +743,7 @@ void GranularProcessor::Prepare() {
       }
       int32_t num_grains = (num_channels_ == 1 ? 32 : 26) * \
           (low_fidelity_ ? 20 : 16) >> 4;
-      player_.Init(num_channels_, num_grains);
+      player_.Init(num_channels_, num_grains, sample_rate());
       ws_player_.Init(&correlator_, num_channels_);
       looper_.Init(num_channels_);
       kammerl_.Init(num_channels_);

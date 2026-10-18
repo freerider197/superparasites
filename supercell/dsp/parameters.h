@@ -52,10 +52,9 @@ struct Parameters {
     float overlap;
     float window_shape;
     float stereo_spread;
-    // Clock-locked grains every clock_divide / clock_multiply TRIG periods.
-    // clock_multiply == 0: free-running.
-    int32_t clock_multiply;
-    int32_t clock_divide;
+    // DENSITY side: -1 left of noon, 0 noon, 1 right of noon. With a clock,
+    // side and overlap select the grain rate.
+    int32_t rhythm_side;
     bool reverse;
   } granular;
 
