@@ -104,8 +104,8 @@ void GranularProcessor::ProcessGranular(
     case PLAYBACK_MODE_GRANULAR:
       // In Granular mode, DENSITY is a meta parameter.
       //   With a TRIG clock: grains only on clock ticks. Noon: every tick.
-      //   Left of noon: every 2nd..16th tick. Right of noon: Euclidean skip
-      //   patterns (see GranularSamplePlayer::PatternHit).
+      //   Left of noon: straight 16-tick patterns. Right of noon: Euclidean
+      //   skip patterns (see GranularSamplePlayer::PatternHit).
       //   Without a clock: free-running regular grains, rate increasing away
       //   from noon. Each TRIG restarts the rhythm.
       if (parameters_.density >= 0.53f) {

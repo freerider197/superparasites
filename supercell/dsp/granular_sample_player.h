@@ -60,18 +60,27 @@ const int32_t kTriggerLatencyBlocks = 4;
 
 // With a clock, grains only fire on clock ticks, never in between. DENSITY
 // picks which ticks fire, going outwards from noon (noon: every tick):
-//   Left of noon: every Nth tick.
+//   Left of noon: straight 16-tick patterns (bit i = tick i), sparser
+//   towards the end, down to one hit every 8 ticks.
 //   Right of noon: Euclidean patterns, k hits spread evenly over 16 ticks.
-const int32_t kNumDivisions = 6;
-const int32_t kDivisions[kNumDivisions] = { 2, 3, 4, 6, 8, 16 };
 const uint32_t kPatternLength = 16;
+const int32_t kNumStraightPatterns = 7;
+const uint16_t kStraightPatterns[kNumStraightPatterns] = {
+  0x5555,  // x.x.x.x.x.x.x.x.
+  0x4949,  // x..x..x.x..x..x.
+  0x1249,  // x..x..x..x..x...
+  0x1111,  // x...x...x...x...
+  0x0909,  // x..x....x..x....
+  0x1041,  // x.....x.....x...
+  0x0101,  // x.......x.......
+};
 const int32_t kNumEuclideanPatterns = 6;
 const int32_t kEuclideanHits[kNumEuclideanPatterns] = { 13, 11, 9, 7, 5, 3 };
 
 // With a clock, SIZE steps through these fractions of the clock period and
 // POSITION steps through slices aligned to the clock ticks in the recording.
 const float kSyncedSizes[] = {
-  1.0f / 16.0f, 1.0f / 8.0f, 1.0f / 4.0f, 1.0f / 2.0f, 1.0f, 2.0f
+  1.0f / 4.0f, 1.0f / 2.0f, 3.0f / 4.0f, 1.0f, 1.5f, 2.0f, 3.0f, 4.0f
 };
 const int32_t kNumSyncedSizes = sizeof(kSyncedSizes) / sizeof(kSyncedSizes[0]);
 const float kMinSyncedGrainSize = 128.0f;
@@ -262,9 +271,9 @@ class GranularSamplePlayer {
       pattern_step_ = -1;
     }
     if (side < 0) {
-      int32_t n = kDivisions[QuantizeWithHysteresis(
-          amount, kNumDivisions, &pattern_step_)];
-      return tick % n == 0;
+      uint16_t pattern = kStraightPatterns[QuantizeWithHysteresis(
+          amount, kNumStraightPatterns, &pattern_step_)];
+      return (pattern >> (tick % kPatternLength)) & 1;
     } else if (side > 0) {
       uint32_t k = kEuclideanHits[QuantizeWithHysteresis(
           amount, kNumEuclideanPatterns, &pattern_step_)];
