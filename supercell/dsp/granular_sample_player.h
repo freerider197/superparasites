@@ -32,6 +32,7 @@
 #include "stmlib/stmlib.h"
 
 #include <algorithm>
+#include <cmath>
 
 #include "stmlib/dsp/atan.h"
 #include "stmlib/dsp/units.h"
@@ -52,6 +53,14 @@ const int32_t kMaxNumGrains = 40;
 // (or no clock at all) falls back to free-running grains.
 const int32_t kMinClockPeriod = 64;
 const int32_t kMaxClockPeriod = 65536;
+
+// With a clock, SIZE steps through these fractions of the clock period and
+// POSITION steps through slices aligned to the clock ticks in the recording.
+const float kSyncedSizes[] = {
+  1.0f / 32.0f, 1.0f / 16.0f, 1.0f / 8.0f, 1.0f / 4.0f, 1.0f / 2.0f, 1.0f, 2.0f
+};
+const int32_t kNumSyncedSizes = sizeof(kSyncedSizes) / sizeof(kSyncedSizes[0]);
+const float kMinSyncedGrainSize = 128.0f;
 
 using namespace stmlib;
 
@@ -74,6 +83,7 @@ class GranularSamplePlayer {
     samples_since_clock_ = kMaxClockPeriod + 1;
     clock_period_ = 0;
     ratchets_left_ = 0;
+    recorded_since_clock_ = 0;
   }
   
   template<Resolution resolution>
@@ -94,6 +104,10 @@ class GranularSamplePlayer {
           samples_since_clock_ <= kMaxClockPeriod ? samples_since_clock_ : 0;
       samples_since_clock_ = 0;
       grain_rate_phasor_ = 0.0f;
+      // While frozen, keep the grid of the frozen recording.
+      if (!parameters.freeze) {
+        recorded_since_clock_ = 0;
+      }
       ratchets_left_ = clock_ratio - 1;
     }
 
@@ -148,6 +162,9 @@ class GranularSamplePlayer {
     }
 
     samples_since_clock_ += size;
+    if (!parameters.freeze && recorded_since_clock_ < (1 << 24)) {
+      recorded_since_clock_ += size;
+    }
     if (samples_since_clock_ > kMaxClockPeriod) {
       samples_since_clock_ = kMaxClockPeriod + 1;
       clock_period_ = 0;
@@ -221,9 +238,25 @@ class GranularSamplePlayer {
     float position = parameters.position;
     float pitch = parameters.pitch;
     float window_shape = parameters.granular.window_shape;
-    float grain_size = Interpolate(lut_grain_size, parameters.size, 256.0f);
     float pitch_ratio = SemitonesToRatio(pitch);
     float inv_pitch_ratio = SemitonesToRatio(-pitch);
+    bool synced = clock_period_ > 0;
+    float grain_size;
+    if (synced) {
+      int32_t step = static_cast<int32_t>(parameters.size * kNumSyncedSizes);
+      CONSTRAIN(step, 0, kNumSyncedSizes - 1);
+      grain_size = clock_period_ * kSyncedSizes[step];
+      // Halve until it fits in the buffer (with room for the play head).
+      float max_size = buffer_size / (1.0f + pitch_ratio);
+      while (grain_size > max_size && grain_size > kMinSyncedGrainSize) {
+        grain_size *= 0.5f;
+      }
+      if (grain_size < kMinSyncedGrainSize) {
+        grain_size = kMinSyncedGrainSize;
+      }
+    } else {
+      grain_size = Interpolate(lut_grain_size, parameters.size, 256.0f);
+    }
     float pan = 0.5f + parameters.stereo_spread * (Random::GetFloat() - 0.5f);
     float gain_l, gain_r;
     if (num_channels_ == 1) {
@@ -239,7 +272,7 @@ class GranularSamplePlayer {
       }
     }
     
-    if (pitch_ratio > 1.0f) {
+    if (pitch_ratio > 1.0f && !synced) {
       // The grain's play-head moves faster than the buffer record-head.
       // we must make sure that the grain will not consume too much data.
       // In some situations, it might be necessary to reduce the size of the
@@ -257,8 +290,23 @@ class GranularSamplePlayer {
 
     bool reverse = parameters.granular.reverse;
     int32_t size = static_cast<int32_t>(grain_size) & ~1;
-    int32_t start = buffer_head - static_cast<int32_t>(
-        position * available + eaten_by_play_head);
+    float delay = position * available + eaten_by_play_head;
+    if (synced) {
+      // Candidate start points sit at whole slices before/after the last
+      // clock tick: delay = phase + j * slice. POSITION picks j.
+      float slice = grain_size;
+      float since_tick = static_cast<float>(recorded_since_clock_) +
+          (parameters.freeze ? 0.0f : static_cast<float>(pre_delay));
+      float phase = since_tick - floorf(since_tick / slice) * slice;
+      float j_min = ceilf((eaten_by_play_head - phase) / slice);
+      float j_max = floorf((buffer_size - grain_size - phase) / slice);
+      if (j_min < 0.0f) j_min = 0.0f;
+      if (j_max >= j_min) {
+        float j = j_min + floorf(position * (j_max - j_min) + 0.5f);
+        delay = phase + j * slice;
+      }
+    }
+    int32_t start = buffer_head - static_cast<int32_t>(delay);
     grain->Start(
         pre_delay,
         buffer_size,
@@ -285,6 +333,7 @@ class GranularSamplePlayer {
   int32_t samples_since_clock_;
   int32_t clock_period_;
   int32_t ratchets_left_;
+  int32_t recorded_since_clock_;
   
   Grain grains_[kMaxNumGrains];
   int32_t available_grains_[kMaxNumGrains];
