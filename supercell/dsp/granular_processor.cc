@@ -102,13 +102,12 @@ void GranularProcessor::ProcessGranular(
 
   switch (playback_mode_) {
     case PLAYBACK_MODE_GRANULAR:
-      // In Granular mode, DENSITY is a meta parameter. Overlap grows from
-      // noon towards either end.
-      //   With a TRIG clock: left of noon sparser, right of noon denser
-      //   clock-synced grains, noon one grain per TRIG (see
-      //   GranularSamplePlayer::SelectRhythm).
-      //   Without a clock: free-running regular grains on both sides, rate
-      //   increasing away from noon. Each TRIG restarts the rhythm.
+      // In Granular mode, DENSITY is a meta parameter.
+      //   With a TRIG clock: grains only on clock ticks. Noon: every tick.
+      //   Left of noon: every 2nd..16th tick. Right of noon: Euclidean skip
+      //   patterns (see GranularSamplePlayer::PatternHit).
+      //   Without a clock: free-running regular grains, rate increasing away
+      //   from noon. Each TRIG restarts the rhythm.
       if (parameters_.density >= 0.53f) {
         parameters_.granular.overlap = (parameters_.density - 0.53f) * 2.12f;
         parameters_.granular.rhythm_side = 1;
@@ -743,7 +742,7 @@ void GranularProcessor::Prepare() {
       }
       int32_t num_grains = (num_channels_ == 1 ? 32 : 26) * \
           (low_fidelity_ ? 20 : 16) >> 4;
-      player_.Init(num_channels_, num_grains, sample_rate());
+      player_.Init(num_channels_, num_grains);
       ws_player_.Init(&correlator_, num_channels_);
       looper_.Init(num_channels_);
       kammerl_.Init(num_channels_);

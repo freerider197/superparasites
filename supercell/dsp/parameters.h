@@ -53,7 +53,7 @@ struct Parameters {
     float window_shape;
     float stereo_spread;
     // DENSITY side: -1 left of noon, 0 noon, 1 right of noon. With a clock,
-    // side and overlap select the grain rate.
+    // side and overlap select the pattern of clock ticks that fire.
     int32_t rhythm_side;
     bool reverse;
   } granular;

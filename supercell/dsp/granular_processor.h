@@ -51,7 +51,6 @@ namespace clouds {
 
 const int32_t kDownsamplingFactor = 2;
 
-
 // Granular mode: point on TEXTURE where window shaping ends and diffusion
 // begins.
 const float kDiffusionStart = 0.6f;
