@@ -189,7 +189,7 @@ void CvScaler::Read(Parameters* parameters) {
   // Update KAMMERL_MODE parameters
   parameters->kammerl.slice_selection = smoothed_adc_value_[ADC_TEXTURE_CV];
   CONSTRAIN(parameters->kammerl.slice_selection, 0.0f, 1.0f);
-  parameters->kammerl.slice_modulation = smoothed_adc_value_[ADC_TEXTURE_POTENTIOMETER];
+  parameters->kammerl.slice_modulation = smoothed_adc_value_[ADC_CHANNEL_LAST + ADC_TEXTURE_POTENTIOMETER];
   CONSTRAIN(parameters->kammerl.slice_modulation, 0.0f, 1.0f);
 
   parameters->kammerl.size_modulation = density; 
