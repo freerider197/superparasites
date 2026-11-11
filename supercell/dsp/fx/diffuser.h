@@ -42,6 +42,8 @@ class Diffuser {
   
   void Init(float* buffer) {
     engine_.Init(buffer);
+    amount_ = target_amount_ = 0.0f;
+    kap_ = target_kap_ = 0.625f;
   }
   
   void Process(FloatFrame* in_out, size_t size) {
@@ -62,9 +64,11 @@ class Diffuser {
     E::DelayLine<Memory, 6> apr3;
     E::DelayLine<Memory, 7> apr4;
     E::Context c;
-    const float kap = 0.625f;
     while (size--) {
       engine_.Start(&c);
+      ONE_POLE(amount_, target_amount_, 0.002f);
+      ONE_POLE(kap_, target_kap_, 0.002f);
+      const float kap = kap_;
       
       float wet = 0.0f;
       c.Read(in_out->l);
@@ -96,7 +100,12 @@ class Diffuser {
   }
   
   void set_amount(float amount) {
-    amount_ = amount;
+    target_amount_ = amount;
+  }
+
+  // Allpass gain: low = tight, high = dense smear.
+  void set_diffusion(float kap) {
+    target_kap_ = kap;
   }
   
  private:
@@ -104,6 +113,9 @@ class Diffuser {
   E engine_;
   
   float amount_;
+  float target_amount_;
+  float kap_;
+  float target_kap_;
   DISALLOW_COPY_AND_ASSIGN(Diffuser);
 };
 

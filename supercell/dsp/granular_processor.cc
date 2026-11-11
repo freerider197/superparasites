@@ -103,13 +103,20 @@ void GranularProcessor::ProcessGranular(
   switch (playback_mode_) {
     case PLAYBACK_MODE_GRANULAR:
       // In Granular mode, DENSITY is a meta parameter.
-      parameters_.granular.use_deterministic_seed = parameters_.density < 0.5f;
+      //   With a TRIG clock: grains only on clock ticks. Noon: every tick.
+      //   Left of noon: straight 16-tick patterns. Right of noon: Euclidean
+      //   skip patterns (see GranularSamplePlayer::PatternHit).
+      //   Without a clock: free-running regular grains, rate increasing away
+      //   from noon. Each TRIG restarts the rhythm.
       if (parameters_.density >= 0.53f) {
         parameters_.granular.overlap = (parameters_.density - 0.53f) * 2.12f;
+        parameters_.granular.rhythm_side = 1;
       } else if (parameters_.density <= 0.47f) {
         parameters_.granular.overlap = (0.47f - parameters_.density) * 2.12f;
+        parameters_.granular.rhythm_side = -1;
       } else {
         parameters_.granular.overlap = 0.0f;
+        parameters_.granular.rhythm_side = 0;
       }
 
 #ifdef CLOUDS_QUANTIZE_SEMITONES
@@ -118,9 +125,9 @@ void GranularProcessor::ProcessGranular(
       parameters_.pitch = static_cast<int>(parameters_.pitch + 0.5f);
 #endif
 
-      // And TEXTURE too.
-      parameters_.granular.window_shape = parameters_.texture < 0.75f
-          ? parameters_.texture * 1.333f : 1.0f;
+      // And TEXTURE too: window shape up to kDiffusionStart, then diffusion.
+      parameters_.granular.window_shape = parameters_.texture < kDiffusionStart
+          ? parameters_.texture / kDiffusionStart : 1.0f;
 
       if (resolution() == 8) {
         player_.Play(buffer_8_, parameters_, &output[0].l, size);
@@ -414,11 +421,20 @@ void GranularProcessor::Process(
       playback_mode_ != PLAYBACK_MODE_OLIVERB &&
       playback_mode_ != PLAYBACK_MODE_RESONESTOR &&
       playback_mode_ != PLAYBACK_MODE_KAMMERL) {
-    float texture = parameters_.texture;
-    float diffusion = playback_mode_ == PLAYBACK_MODE_GRANULAR
-        ? texture > 0.75f ? (texture - 0.75f) * 4.0f : 0.0f
-        : parameters_.density;
-    diffuser_.set_amount(diffusion);
+    if (playback_mode_ == PLAYBACK_MODE_GRANULAR) {
+      // Diffusion fades in tight (low allpass gain), then grows denser and
+      // longer as TEXTURE goes up.
+      float texture = parameters_.texture;
+      float diffusion = texture > kDiffusionStart
+          ? (texture - kDiffusionStart) / (1.0f - kDiffusionStart) : 0.0f;
+      float amount = diffusion * 3.0f;
+      CONSTRAIN(amount, 0.0f, 1.0f);
+      diffuser_.set_amount(amount);
+      diffuser_.set_diffusion(0.25f + 0.5f * diffusion);
+    } else {
+      diffuser_.set_amount(parameters_.density);
+      diffuser_.set_diffusion(0.625f);
+    }
     diffuser_.Process(out_, size);
   }
 
